@@ -31,4 +31,5 @@ use the editor.
 
 ## Project rules
 
-- The app is the user's uploaded HTML file kept byte-for-byte in `public/so-cot-truyen.html`; `/so` loads it unchanged in an iframe (srcdoc) and injects `window.claude` backed by Lovable Cloud table `story_docs`, so the file's built-in cloud save works per account. `/` redirects to `/so`. Why: the user asked that their code stay unchanged.
+- The app is the user's uploaded HTML file kept byte-for-byte in `public/so-cot-truyen.html`; `/so` loads it unchanged in an iframe (srcdoc) and injects `window.claude` backed by Lovable Cloud table `story_docs`, so the file's built-in cloud save works per account. Sign-in/sign-up is a dialog on the same `/so` page (signed-out users still edit with local save). `/` redirects to `/so`. Why: the user asked that their code stay unchanged.
+- AI contradiction check lives in `src/lib/ai/consistency.{functions,server}.ts`: auth-only server fn, Lovable AI Gateway Responses API with structured output; the book JSON is read from the iframe via `eval("JSON.stringify(S)")`. Why: keeps the user HTML untouched and the AI endpoint closed to anonymous callers.
