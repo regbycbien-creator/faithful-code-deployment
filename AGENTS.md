@@ -31,4 +31,4 @@ use the editor.
 
 ## Project rules
 
-- The app is the user's uploaded HTML file kept byte-for-byte in `public/so-cot-truyen.html`; `/` only redirects there. Why: the user asked that their code be deployed unchanged.
+- The app is the user's uploaded HTML file kept byte-for-byte in `public/so-cot-truyen.html`; `/so` loads it unchanged in an iframe (srcdoc) and injects `window.claude` backed by Lovable Cloud table `story_docs`, so the file's built-in cloud save works per account. `/` redirects to `/so`. Why: the user asked that their code stay unchanged.

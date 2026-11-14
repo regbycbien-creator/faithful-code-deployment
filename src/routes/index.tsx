@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 
-// The story book is served byte-for-byte from public/so-cot-truyen.html; / just sends visitors there.
+// The story book HTML stays byte-for-byte in public/; / sends visitors to /so (sign-in + cloud save wrapper).
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -13,7 +13,7 @@ export const Route = createFileRoute("/")({
     ],
   }),
   beforeLoad: () => {
-    throw redirect({ href: "/so-cot-truyen.html", reloadDocument: true });
+    throw redirect({ to: "/so" });
   },
   component: () => null,
 });
