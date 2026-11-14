@@ -1,10 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Cloud, HardDrive, LogIn, LogOut, Sparkles, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { checkStoryConsistency } from "@/lib/ai/consistency.functions";
 import type { ConsistencyResult } from "@/lib/ai/consistency.server";
+import { BOOK_RESPONSIVE_CSS } from "@/lib/book-responsive";
 
 export const Route = createFileRoute("/so")({
   ssr: false,
@@ -41,7 +43,18 @@ function makeBridge(userId: string) {
   return { use: async (name: string) => (name === "db" ? db : null) };
 }
 
-const btn = "rounded border border-border bg-background px-2.5 py-1 text-sm text-foreground hover:bg-muted";
+const btn =
+  "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm text-foreground hover:bg-muted sm:h-8";
+const closeBtn = "grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted";
+
+// Esc closes dialogs/panels on keyboards.
+function useEscape(onEsc: () => void) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => e.key === "Escape" && onEsc();
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onEsc]);
+}
 
 function SoPage() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -68,7 +81,9 @@ function SoPage() {
   const uid = session?.user.id;
   // Signed out: no bridge, so the book saves on this device as in the original file.
   (window as unknown as { __claude: unknown }).__claude = uid ? makeBridge(uid) : undefined;
-  const doc = html.replace("<head>", "<head><script>window.claude=parent.__claude</script>");
+  const doc = html
+    .replace("<head>", "<head><script>window.claude=parent.__claude</script>")
+    .replace("</head>", `<style>${BOOK_RESPONSIVE_CSS}</style></head>`);
 
   const readBook = (): string | null => {
     try {
@@ -80,31 +95,44 @@ function SoPage() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
-      <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border px-3 py-1.5 text-sm">
-        <span className="mr-auto text-muted-foreground">
-          {uid ? "Đang lưu vào tài khoản" : "Chưa đăng nhập – chỉ lưu trên máy này"}
+    <div className="flex h-dvh flex-col bg-background text-foreground">
+      <div className="flex items-center gap-1.5 border-b border-border bg-card px-2 py-1.5 sm:gap-2 sm:px-3">
+        <span className="mr-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground sm:text-sm">
+          {uid ? <Cloud className="h-4 w-4 shrink-0" aria-hidden /> : <HardDrive className="h-4 w-4 shrink-0" aria-hidden />}
+          <span className="truncate">
+            <span className="sm:hidden">{uid ? "Lưu vào tài khoản" : "Lưu trên máy này"}</span>
+            <span className="hidden sm:inline">{uid ? "Đang lưu vào tài khoản" : "Chưa đăng nhập – chỉ lưu trên máy này"}</span>
+          </span>
         </span>
-        <button className={btn} onClick={() => setAiOpen((v) => !v)}>
-          Kiểm tra mâu thuẫn (AI)
+        <button className={`${btn} ${aiOpen ? "bg-muted" : ""}`} aria-pressed={aiOpen} onClick={() => setAiOpen((v) => !v)}>
+          <Sparkles className="h-4 w-4" aria-hidden />
+          <span className="sm:hidden">AI</span>
+          <span className="hidden sm:inline">Kiểm tra mâu thuẫn</span>
         </button>
         {uid ? (
           <>
-            <span className="text-muted-foreground">{session?.user.email}</span>
-            <button className={btn} onClick={() => supabase.auth.signOut()}>
-              Đăng xuất
+            <span className="hidden max-w-[14rem] truncate text-sm text-muted-foreground lg:inline">{session?.user.email}</span>
+            <button className={btn} onClick={() => supabase.auth.signOut()} aria-label="Đăng xuất" title={session?.user.email ?? undefined}>
+              <LogOut className="h-4 w-4" aria-hidden />
+              <span className="hidden sm:inline">Đăng xuất</span>
             </button>
           </>
         ) : (
           <button className={btn} onClick={() => setAuthOpen(true)}>
-            Đăng nhập / Đăng ký
+            <LogIn className="h-4 w-4" aria-hidden />
+            <span className="sm:hidden">Đăng nhập</span>
+            <span className="hidden sm:inline">Đăng nhập / Đăng ký</span>
           </button>
         )}
       </div>
       <div className="relative flex min-h-0 flex-1">
         <iframe ref={frame} key={uid ?? "guest"} title="Sổ cốt truyện" srcDoc={doc} className="h-full min-w-0 flex-1 border-0" />
         {aiOpen && (
-          <AiPanel signedIn={!!uid} readBook={readBook} onClose={() => setAiOpen(false)} onLogin={() => setAuthOpen(true)} />
+          <>
+            {/* Tablet: panel floats over the book; tap outside to close. Desktop: it sits beside the book. */}
+            <div className="absolute inset-0 z-10 hidden bg-foreground/30 sm:block lg:hidden" onClick={() => setAiOpen(false)} />
+            <AiPanel signedIn={!!uid} readBook={readBook} onClose={() => setAiOpen(false)} onLogin={() => setAuthOpen(true)} />
+          </>
         )}
       </div>
       {authOpen && !uid && <AuthDialog onClose={() => setAuthOpen(false)} />}
@@ -118,6 +146,7 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
   const [pw, setPw] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  useEscape(onClose);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -144,14 +173,14 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
       role="tab"
       aria-selected={mode === m}
       onClick={() => { setMode(m); setMsg(""); }}
-      className={`flex-1 rounded px-3 py-1.5 text-sm ${mode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+      className={`flex-1 rounded px-3 py-2 text-sm ${mode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
     >
       {label}
     </button>
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-foreground/40 p-3 sm:p-4" onClick={onClose}>
       <form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
@@ -159,7 +188,7 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
       >
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Tài khoản</h2>
-          <button type="button" aria-label="Đóng" className="px-2 text-muted-foreground" onClick={onClose}>✕</button>
+          <button type="button" aria-label="Đóng" className={closeBtn} onClick={onClose}><X className="h-4 w-4" /></button>
         </div>
         <div role="tablist" className="flex gap-1 rounded-md border border-border p-1">
           {tab("in", "Đăng nhập")}
@@ -185,6 +214,7 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [res, setRes] = useState<ConsistencyResult | null>(null);
+  useEscape(props.onClose);
 
   async function run() {
     setBusy(true);
@@ -201,10 +231,10 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
   }
 
   return (
-    <aside className="flex w-full max-w-md flex-col gap-3 overflow-y-auto border-l border-border bg-card p-4 text-card-foreground max-sm:absolute max-sm:inset-0 max-sm:max-w-none">
+    <aside className="absolute inset-y-0 right-0 z-20 flex w-full flex-col gap-3 overflow-y-auto border-l border-border bg-card p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-card-foreground sm:w-[420px] sm:shadow-xl lg:static lg:z-auto lg:w-[380px] lg:shrink-0 lg:shadow-none xl:w-[440px]">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">Kiểm tra mâu thuẫn</h2>
-        <button aria-label="Đóng" className="px-2 text-muted-foreground" onClick={props.onClose}>✕</button>
+        <button aria-label="Đóng" className={closeBtn} onClick={props.onClose}><X className="h-4 w-4" /></button>
       </div>
       <p className="text-sm text-muted-foreground">
         Nhập ghi chú cốt truyện. AI sẽ tìm chỗ mâu thuẫn về nhân vật, địa điểm và sự kiện.
@@ -213,18 +243,18 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Ví dụ: Lâm Thu sinh năm 870, gặp Mạnh Lịch ở Bách Hải năm 860…"
-        className="min-h-40 w-full rounded border border-input bg-background p-2 text-sm"
+        className="min-h-40 w-full rounded border border-input bg-background p-2 text-base sm:text-sm"
       />
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={withBook} onChange={(e) => setWithBook(e.target.checked)} />
+        <input type="checkbox" className="h-4 w-4" checked={withBook} onChange={(e) => setWithBook(e.target.checked)} />
         So với toàn bộ nội dung sổ hiện tại
       </label>
       {props.signedIn ? (
-        <button disabled={busy} onClick={run} className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-60">
+        <button disabled={busy} onClick={run} className="min-h-10 rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-60">
           {busy ? "AI đang đọc… (có thể mất tới 1 phút)" : "Kiểm tra"}
         </button>
       ) : (
-        <button onClick={props.onLogin} className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground">
+        <button onClick={props.onLogin} className="min-h-10 rounded bg-primary px-3 py-2 text-sm text-primary-foreground">
           Đăng nhập để dùng kiểm tra AI
         </button>
       )}
