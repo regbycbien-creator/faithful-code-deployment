@@ -28,3 +28,7 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Project rules
+
+- The app is the user's uploaded HTML file kept byte-for-byte in `public/so-cot-truyen.html`; `/` only redirects there. Why: the user asked that their code be deployed unchanged.
