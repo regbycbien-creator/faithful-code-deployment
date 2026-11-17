@@ -14,7 +14,7 @@ function friendlyError(e: unknown): string {
 
 export const checkStoryConsistency = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input: { notes: string; book: string | null }) => {
+  .validator((input: { notes: string; book: string | null }) => {
     const notes = String(input?.notes ?? "").slice(0, 50_000);
     const book = input?.book ? String(input.book).slice(0, 300_000) : null;
     if (!notes.trim() && !book) throw new Error("Hãy nhập ghi chú hoặc chọn kèm nội dung sổ.");

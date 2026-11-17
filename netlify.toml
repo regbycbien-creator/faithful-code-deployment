@@ -1,0 +1,5 @@
+# On Netlify, the build's server preset writes static assets to `dist`
+# (and the SSR function to .netlify/functions-internal), not `dist/client`.
+[build]
+  command = "bun run build"
+  publish = "dist"
