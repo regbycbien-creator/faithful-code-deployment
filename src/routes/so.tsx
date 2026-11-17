@@ -428,7 +428,7 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
     setMsg("");
     if (mode === "in") {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
-      if (error) setMsg("Sai email hoặc mật khẩu, hoặc email chưa được xác nhận.");
+      if (error) setMsg("Sai email hoặc mật khẩu.");
     } else {
       const { data, error } = await supabase.auth.signUp({
         email,
