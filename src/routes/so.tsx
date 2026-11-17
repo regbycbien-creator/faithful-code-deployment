@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Cloud, HardDrive, LogIn, LogOut, Sparkles, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { checkStoryConsistency } from "@/lib/ai/consistency.functions";
 import type { ConsistencyResult } from "@/lib/ai/consistency.server";
 import { BOOK_RESPONSIVE_CSS } from "@/lib/book-responsive";
+import { AUTOSAVE_INTERVAL_MS, BOOK_LOCAL_KEY, createCloudSaver } from "@/lib/autosave";
 
 export const Route = createFileRoute("/so")({
   ssr: false,
@@ -24,24 +25,34 @@ export const Route = createFileRoute("/so")({
 });
 
 // The original HTML already talks to a `claude.use("db")` storage API; we provide it backed by Lovable Cloud.
+// All cloud writes (the file's own and the page's autosave) share one ordered queue.
 function makeBridge(userId: string) {
+  const saver = createCloudSaver(async (json) => {
+    const { error } = await supabase
+      .from("story_docs")
+      .upsert({ user_id: userId, data: JSON.parse(json), updated_at: new Date().toISOString() });
+    if (error) throw error;
+  });
+  let loaded = false;
   const db = {
     doc: () => ({
       async get() {
         const { data, error } = await supabase.from("story_docs").select("data").eq("user_id", userId).maybeSingle();
         if (error) throw error;
+        if (data) saver.markSynced(JSON.stringify(data.data));
+        loaded = true;
         return { exists: !!data, data: () => data?.data };
       },
       async set(v: unknown) {
-        const { error } = await supabase
-          .from("story_docs")
-          .upsert({ user_id: userId, data: v as never, updated_at: new Date().toISOString() });
-        if (error) throw error;
+        if (!(await saver.save(JSON.stringify(v)))) throw new Error("save failed");
       },
     }),
   };
-  return { use: async (name: string) => (name === "db" ? db : null) };
+  return { use: async (name: string) => (name === "db" ? db : null), saver, isLoaded: () => loaded };
 }
+type Bridge = ReturnType<typeof makeBridge>;
+
+type BookWindow = { eval: (s: string) => string };
 
 const btn =
   "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm text-foreground hover:bg-muted sm:h-8";
@@ -62,6 +73,10 @@ function SoPage() {
   const [authOpen, setAuthOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null);
+  const uid = session?.user.id;
+  // One bridge per account: the iframe keeps the one it saw at load.
+  const bridge = useMemo<Bridge | undefined>(() => (uid ? makeBridge(uid) : undefined), [uid]);
+  const ready = session !== undefined && !!html;
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -76,23 +91,73 @@ function SoPage() {
     if (session) setAuthOpen(false);
   }, [session]);
 
-  if (session === undefined || !html) return <div className="p-6 text-muted-foreground">Đang tải…</div>;
-
-  const uid = session?.user.id;
-  // Signed out: no bridge, so the book saves on this device as in the original file.
-  (window as unknown as { __claude: unknown }).__claude = uid ? makeBridge(uid) : undefined;
-  const doc = html
-    .replace("<head>", "<head><script>window.claude=parent.__claude</script>")
-    .replace("</head>", `<style>${BOOK_RESPONSIVE_CSS}</style></head>`);
-
+  const bookWin = () => frame.current?.contentWindow as unknown as BookWindow | null;
   const readBook = (): string | null => {
     try {
-      const w = frame.current?.contentWindow as unknown as { eval: (s: string) => string } | null;
-      return w ? w.eval("JSON.stringify(S)") : null;
+      return bookWin()?.eval("JSON.stringify(S)") ?? null;
     } catch {
       return null;
     }
   };
+  // Runs the file's own save(): writes this device's copy now and the account copy shortly after.
+  const runFileSave = () => {
+    try {
+      bookWin()?.eval("save()");
+    } catch {
+      /* book not loaded yet */
+    }
+  };
+  // Push any unsaved change right away (leaving the page, switching apps, signing out).
+  const flush = async () => {
+    const snap = readBook();
+    if (!snap) return;
+    if (snap !== localStorage.getItem(BOOK_LOCAL_KEY)) runFileSave();
+    if (bridge?.isLoaded() && bridge.saver.isDirty(snap)) await bridge.saver.save(snap);
+    else if (bridge) await bridge.saver.idle();
+  };
+
+  // Autosave safety net on top of the file's per-edit save: catches changes the
+  // file did not save, retries failed account saves, and flushes when the page is left.
+  useEffect(() => {
+    if (!ready) return;
+    const tick = () => {
+      const snap = readBook();
+      if (!snap) return;
+      const unsaved = bridge
+        ? bridge.isLoaded() && bridge.saver.isDirty(snap)
+        : snap !== localStorage.getItem(BOOK_LOCAL_KEY);
+      if (unsaved) runFileSave();
+    };
+    const onHide = () => { if (document.visibilityState === "hidden") void flush(); };
+    const onPageHide = () => void flush();
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const snap = readBook();
+      if (bridge && snap && (bridge.saver.busy() || (bridge.isLoaded() && bridge.saver.isDirty(snap)))) {
+        void flush();
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    const t = setInterval(tick, AUTOSAVE_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, bridge]);
+
+  if (!ready || !html) return <div className="p-6 text-muted-foreground">Đang tải…</div>;
+
+  // Signed out: no bridge, so the book saves on this device as in the original file.
+  (window as unknown as { __claude: unknown }).__claude = bridge;
+  const doc = html
+    .replace("<head>", "<head><script>window.claude=parent.__claude</script>")
+    .replace("</head>", `<style>${BOOK_RESPONSIVE_CSS}</style></head>`);
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -100,8 +165,8 @@ function SoPage() {
         <span className="mr-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground sm:text-sm">
           {uid ? <Cloud className="h-4 w-4 shrink-0" aria-hidden /> : <HardDrive className="h-4 w-4 shrink-0" aria-hidden />}
           <span className="truncate">
-            <span className="sm:hidden">{uid ? "Lưu vào tài khoản" : "Lưu trên máy này"}</span>
-            <span className="hidden sm:inline">{uid ? "Đang lưu vào tài khoản" : "Chưa đăng nhập – chỉ lưu trên máy này"}</span>
+            <span className="sm:hidden">{uid ? "Tự lưu vào tài khoản" : "Tự lưu trên máy này"}</span>
+            <span className="hidden sm:inline">{uid ? "Tự động lưu vào tài khoản" : "Chưa đăng nhập – tự động lưu trên máy này"}</span>
           </span>
         </span>
         <button className={`${btn} ${aiOpen ? "bg-muted" : ""}`} aria-pressed={aiOpen} onClick={() => setAiOpen((v) => !v)}>
@@ -112,7 +177,7 @@ function SoPage() {
         {uid ? (
           <>
             <span className="hidden max-w-[14rem] truncate text-sm text-muted-foreground lg:inline">{session?.user.email}</span>
-            <button className={btn} onClick={() => supabase.auth.signOut()} aria-label="Đăng xuất" title={session?.user.email ?? undefined}>
+            <button className={btn} onClick={async () => { await flush(); await supabase.auth.signOut(); }} aria-label="Đăng xuất" title={session?.user.email ?? undefined}>
               <LogOut className="h-4 w-4" aria-hidden />
               <span className="hidden sm:inline">Đăng xuất</span>
             </button>
