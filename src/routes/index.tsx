@@ -5,11 +5,11 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Sổ cốt truyện – Phủ Hách & Đại Hòa" },
-      { name: "description", content: "Sổ cốt truyện Phủ Hách & Đại Hòa." },
+      { name: "description", content: "Sổ cốt truyện Phủ Hách & Đại Hòa — Cốt truyện · Nhân vật · Plot chi tiết · Chi tiết án · Cần làm rõ." },
       { property: "og:title", content: "Sổ cốt truyện – Phủ Hách & Đại Hòa" },
-      { property: "og:description", content: "Sổ cốt truyện Phủ Hách & Đại Hòa." },
+      { property: "og:description", content: "Sổ cốt truyện Phủ Hách & Đại Hòa — Cốt truyện · Nhân vật · Plot chi tiết · Chi tiết án · Cần làm rõ." },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   beforeLoad: () => {
