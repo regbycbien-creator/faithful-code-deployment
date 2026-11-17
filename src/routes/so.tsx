@@ -9,6 +9,7 @@ import type { ConsistencyResult } from "@/lib/ai/consistency.server";
 import { BOOK_RESPONSIVE_CSS } from "@/lib/book-responsive";
 import { AUTOSAVE_INTERVAL_MS, BOOK_LOCAL_KEY, createCloudSaver } from "@/lib/autosave";
 import { bookFrameHead, chooseStartingCopy } from "@/lib/book-frame";
+import { caseBoxesHead } from "@/lib/case-boxes";
 import {
   formatTime,
   latestPublicData,
@@ -262,7 +263,10 @@ function SoPage() {
       "<head>",
       `<head>${bookFrameHead({ ns: editing ? `:u:${uid}` : null, readonly: !editing })}`,
     )
-    .replace("</head>", `<style>${BOOK_RESPONSIVE_CSS}</style></head>`);
+    .replace(
+      "</head>",
+      `<style>${BOOK_RESPONSIVE_CSS}</style>${caseBoxesHead(!editing)}</head>`,
+    );
   const frameKey = `${viewId ?? (uid ? `u:${uid}` : "public")}:${epoch}`;
   const togglePanel = (p: "ai" | "history") => setPanel((cur) => (cur === p ? null : p));
 
