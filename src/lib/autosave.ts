@@ -26,7 +26,10 @@ export function createCloudSaver(write: (json: string) => Promise<void>) {
 
   return {
     save,
-    markSynced: (json: string) => { lastSynced = json; latest = json; },
+    markSynced: (json: string) => {
+      lastSynced = json;
+      latest = json;
+    },
     isDirty: (json: string) => json !== lastSynced,
     busy: () => inFlight > 0,
     idle: () => chain.then(() => undefined),

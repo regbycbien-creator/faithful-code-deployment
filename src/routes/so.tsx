@@ -1,22 +1,40 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Cloud, HardDrive, LogIn, LogOut, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Cloud, Globe, History, LogIn, LogOut, Sparkles, Upload, X } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { checkStoryConsistency } from "@/lib/ai/consistency.functions";
 import type { ConsistencyResult } from "@/lib/ai/consistency.server";
 import { BOOK_RESPONSIVE_CSS } from "@/lib/book-responsive";
 import { AUTOSAVE_INTERVAL_MS, BOOK_LOCAL_KEY, createCloudSaver } from "@/lib/autosave";
+import { bookFrameHead, chooseStartingCopy } from "@/lib/book-frame";
+import {
+  formatTime,
+  latestPublicData,
+  publishVersion,
+  versionData,
+  type VersionInfo,
+} from "@/lib/public-versions";
+import { HistoryPanel } from "@/components/book/HistoryPanel";
+import { PublishDialog } from "@/components/book/PublishDialog";
+import { btn, closeBtn, panelCls, useEscape } from "@/components/book/ui";
 
 export const Route = createFileRoute("/so")({
   ssr: false,
   head: () => ({
     meta: [
       { title: "Sổ cốt truyện – Phủ Hách & Đại Hòa" },
-      { name: "description", content: "Sổ cốt truyện Phủ Hách & Đại Hòa: lưu theo tài khoản và kiểm tra mâu thuẫn bằng AI." },
+      {
+        name: "description",
+        content:
+          "Sổ cốt truyện Phủ Hách & Đại Hòa: bản công khai ai cũng đọc được, bản riêng cho từng tài khoản, lịch sử đăng tải và kiểm tra mâu thuẫn bằng AI.",
+      },
       { property: "og:title", content: "Sổ cốt truyện – Phủ Hách & Đại Hòa" },
-      { property: "og:description", content: "Lưu sổ cốt truyện theo tài khoản và kiểm tra mâu thuẫn bằng AI." },
+      {
+        property: "og:description",
+        content: "Đọc bản công khai, sửa bản riêng theo tài khoản và đăng tải đồng bộ có lịch sử.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
@@ -25,8 +43,9 @@ export const Route = createFileRoute("/so")({
 });
 
 // The original HTML already talks to a `claude.use("db")` storage API; we provide it backed by Lovable Cloud.
-// All cloud writes (the file's own and the page's autosave) share one ordered queue.
-function makeBridge(userId: string) {
+
+// Private copy: one row per account in story_docs. All cloud writes share one ordered queue.
+function makePrivateBridge(userId: string) {
   const saver = createCloudSaver(async (json) => {
     const { error } = await supabase
       .from("story_docs")
@@ -37,59 +56,104 @@ function makeBridge(userId: string) {
   const db = {
     doc: () => ({
       async get() {
-        const { data, error } = await supabase.from("story_docs").select("data").eq("user_id", userId).maybeSingle();
+        const { data, error } = await supabase
+          .from("story_docs")
+          .select("data")
+          .eq("user_id", userId)
+          .maybeSingle();
         if (error) throw error;
-        if (data) saver.markSynced(JSON.stringify(data.data));
+        if (data) {
+          saver.markSynced(JSON.stringify(data.data));
+          loaded = true;
+          return { exists: true, data: () => data.data };
+        }
+        // First visit: duplicate the public book; autosave then stores it as this account's copy.
+        const start = chooseStartingCopy(
+          await latestPublicData(),
+          localStorage.getItem(BOOK_LOCAL_KEY),
+        );
         loaded = true;
-        return { exists: !!data, data: () => data?.data };
+        return { exists: !!start, data: () => start };
       },
       async set(v: unknown) {
         if (!(await saver.save(JSON.stringify(v)))) throw new Error("save failed");
       },
     }),
   };
-  return { use: async (name: string) => (name === "db" ? db : null), saver, isLoaded: () => loaded };
+  return {
+    use: async (name: string) => (name === "db" ? db : null),
+    saver,
+    isLoaded: () => loaded,
+  };
 }
-type Bridge = ReturnType<typeof makeBridge>;
+type PrivateBridge = ReturnType<typeof makePrivateBridge>;
+
+// Read-only views (public book, or one history version): loads data, never writes.
+function makeViewBridge(load: () => Promise<unknown | null>) {
+  const db = {
+    doc: () => ({
+      async get() {
+        const v = await load();
+        return { exists: !!v, data: () => v };
+      },
+      async set() {},
+    }),
+  };
+  return { use: async (name: string) => (name === "db" ? db : null) };
+}
 
 type BookWindow = { eval: (s: string) => string };
-
-const btn =
-  "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-sm text-foreground hover:bg-muted sm:h-8";
-const closeBtn = "grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted";
-
-// Esc closes dialogs/panels on keyboards.
-function useEscape(onEsc: () => void) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onEsc();
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [onEsc]);
-}
 
 function SoPage() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [html, setHtml] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
+  const [panel, setPanel] = useState<"ai" | "history" | null>(null);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [viewing, setViewing] = useState<VersionInfo | null>(null);
+  const [epoch, setEpoch] = useState(0);
+  const [swapping, setSwapping] = useState(false);
+  const [historyKey, setHistoryKey] = useState(0);
+  const [notice, setNotice] = useState("");
   const frame = useRef<HTMLIFrameElement>(null);
-  const uid = session?.user.id;
-  // One bridge per account: the iframe keeps the one it saw at load.
-  const bridge = useMemo<Bridge | undefined>(() => (uid ? makeBridge(uid) : undefined), [uid]);
-  const ready = session !== undefined && !!html;
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data } = supabase.auth.onAuthStateChange((event, s) => {
-      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "INITIAL_SESSION") setSession(s);
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "INITIAL_SESSION")
+        setSession(s);
     });
-    fetch("/so-cot-truyen.html").then((r) => r.text()).then(setHtml);
+    fetch("/so-cot-truyen.html")
+      .then((r) => r.text())
+      .then(setHtml);
     return () => data.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
     if (session) setAuthOpen(false);
   }, [session]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const uid = session?.user.id;
+  const ready = session !== undefined && !!html;
+  // New bridge per account / restore, so the iframe always gets a fresh one.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- epoch forces a fresh bridge after a restore
+  const privateBridge = useMemo<PrivateBridge | undefined>(
+    () => (uid ? makePrivateBridge(uid) : undefined),
+    [uid, epoch],
+  );
+  const editing = !!privateBridge && !viewing;
+  const viewId = viewing?.id;
+  const bridge = useMemo(() => {
+    if (viewId) return makeViewBridge(() => versionData(viewId));
+    if (privateBridge) return privateBridge;
+    return makeViewBridge(latestPublicData);
+  }, [viewId, privateBridge]);
 
   const bookWin = () => frame.current?.contentWindow as unknown as BookWindow | null;
   const readBook = (): string | null => {
@@ -99,7 +163,7 @@ function SoPage() {
       return null;
     }
   };
-  // Runs the file's own save(): writes this device's copy now and the account copy shortly after.
+  // Runs the file's own save(): writes the on-device copy now and the account copy shortly after.
   const runFileSave = () => {
     try {
       bookWin()?.eval("save()");
@@ -107,32 +171,36 @@ function SoPage() {
       /* book not loaded yet */
     }
   };
-  // Push any unsaved change right away (leaving the page, switching apps, signing out).
+  // Push any unsaved change of the private copy right away.
   const flush = async () => {
+    if (!editing || !privateBridge) return;
     const snap = readBook();
     if (!snap) return;
-    if (snap !== localStorage.getItem(BOOK_LOCAL_KEY)) runFileSave();
-    if (bridge?.isLoaded() && bridge.saver.isDirty(snap)) await bridge.saver.save(snap);
-    else if (bridge) await bridge.saver.idle();
+    runFileSave();
+    if (privateBridge.isLoaded() && privateBridge.saver.isDirty(snap))
+      await privateBridge.saver.save(snap);
+    else await privateBridge.saver.idle();
   };
 
   // Autosave safety net on top of the file's per-edit save: catches changes the
-  // file did not save, retries failed account saves, and flushes when the page is left.
+  // file did not save, retries failed saves, and flushes when the page is left.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !editing || !privateBridge) return;
     const tick = () => {
       const snap = readBook();
-      if (!snap) return;
-      const unsaved = bridge
-        ? bridge.isLoaded() && bridge.saver.isDirty(snap)
-        : snap !== localStorage.getItem(BOOK_LOCAL_KEY);
-      if (unsaved) runFileSave();
+      if (snap && privateBridge.isLoaded() && privateBridge.saver.isDirty(snap)) runFileSave();
     };
-    const onHide = () => { if (document.visibilityState === "hidden") void flush(); };
+    const onHide = () => {
+      if (document.visibilityState === "hidden") void flush();
+    };
     const onPageHide = () => void flush();
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       const snap = readBook();
-      if (bridge && snap && (bridge.saver.busy() || (bridge.isLoaded() && bridge.saver.isDirty(snap)))) {
+      if (
+        snap &&
+        (privateBridge.saver.busy() ||
+          (privateBridge.isLoaded() && privateBridge.saver.isDirty(snap)))
+      ) {
         void flush();
         e.preventDefault();
         e.returnValue = "";
@@ -149,58 +217,196 @@ function SoPage() {
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, bridge]);
+  }, [ready, editing, privateBridge]);
 
   if (!ready || !html) return <div className="p-6 text-muted-foreground">Đang tải…</div>;
 
-  // Signed out: no bridge, so the book saves on this device as in the original file.
+  async function view(v: VersionInfo) {
+    await flush();
+    setViewing(v);
+  }
+
+  async function restore(v: VersionInfo) {
+    if (!uid || !privateBridge) return;
+    await flush();
+    setSwapping(true); // unmount the book so its pending saves can't overwrite the restored copy
+    try {
+      await privateBridge.saver.idle();
+      const data = await versionData(v.id);
+      const { error } = await supabase
+        .from("story_docs")
+        .upsert({ user_id: uid, data: data as never, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      setViewing(null);
+      setNotice(`Đã khôi phục bản ${formatTime(v.created_at)} vào bản riêng của bạn.`);
+    } catch {
+      setNotice("Chưa khôi phục được. Thử lại sau.");
+    }
+    setEpoch((e) => e + 1);
+    setSwapping(false);
+  }
+
+  async function publish(note: string) {
+    await flush();
+    const snap = readBook();
+    if (!snap) throw new Error("no book");
+    await publishVersion(snap, note);
+    setPublishOpen(false);
+    setHistoryKey((k) => k + 1);
+    setNotice("Đã đăng tải. Bản công khai trên web giờ là bản của bạn.");
+  }
+
   (window as unknown as { __claude: unknown }).__claude = bridge;
   const doc = html
-    .replace("<head>", "<head><script>window.claude=parent.__claude</script>")
+    .replace(
+      "<head>",
+      `<head>${bookFrameHead({ ns: editing ? `:u:${uid}` : null, readonly: !editing })}`,
+    )
     .replace("</head>", `<style>${BOOK_RESPONSIVE_CSS}</style></head>`);
+  const frameKey = `${viewId ?? (uid ? `u:${uid}` : "public")}:${epoch}`;
+  const togglePanel = (p: "ai" | "history") => setPanel((cur) => (cur === p ? null : p));
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       <div className="flex items-center gap-1.5 border-b border-border bg-card px-2 py-1.5 sm:gap-2 sm:px-3">
         <span className="mr-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground sm:text-sm">
-          {uid ? <Cloud className="h-4 w-4 shrink-0" aria-hidden /> : <HardDrive className="h-4 w-4 shrink-0" aria-hidden />}
+          {editing ? (
+            <Cloud className="h-4 w-4 shrink-0" aria-hidden />
+          ) : viewing ? (
+            <History className="h-4 w-4 shrink-0" aria-hidden />
+          ) : (
+            <Globe className="h-4 w-4 shrink-0" aria-hidden />
+          )}
           <span className="truncate">
-            <span className="sm:hidden">{uid ? "Tự lưu vào tài khoản" : "Tự lưu trên máy này"}</span>
-            <span className="hidden sm:inline">{uid ? "Tự động lưu vào tài khoản" : "Chưa đăng nhập – tự động lưu trên máy này"}</span>
+            {viewing ? (
+              <>
+                Bản {formatTime(viewing.created_at)}
+                <span className="hidden sm:inline"> · chỉ xem</span>
+              </>
+            ) : editing ? (
+              <>
+                <span className="sm:hidden">Bản riêng · tự lưu</span>
+                <span className="hidden sm:inline">
+                  Bản riêng của bạn · tự động lưu, chỉ bạn thấy
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="sm:hidden">Bản công khai</span>
+                <span className="hidden sm:inline">Bản công khai · chỉ xem</span>
+              </>
+            )}
           </span>
         </span>
-        <button className={`${btn} ${aiOpen ? "bg-muted" : ""}`} aria-pressed={aiOpen} onClick={() => setAiOpen((v) => !v)}>
+        {viewing && (
+          <button className={btn} onClick={() => setViewing(null)}>
+            <ArrowLeft className="h-4 w-4" aria-hidden />
+            <span className="hidden sm:inline">{uid ? "Về bản của tôi" : "Về bản công khai"}</span>
+          </button>
+        )}
+        <button
+          className={`${btn} ${panel === "history" ? "bg-muted" : ""}`}
+          aria-pressed={panel === "history"}
+          aria-label="Lịch sử"
+          onClick={() => togglePanel("history")}
+        >
+          <History className="h-4 w-4" aria-hidden />
+          <span className="hidden md:inline">Lịch sử</span>
+        </button>
+        {editing && (
+          <button
+            className={btn}
+            onClick={() => setPublishOpen(true)}
+            aria-label="Đăng tải đồng bộ"
+          >
+            <Upload className="h-4 w-4" aria-hidden />
+            <span className="hidden sm:inline">Đăng tải</span>
+          </button>
+        )}
+        <button
+          className={`${btn} ${panel === "ai" ? "bg-muted" : ""}`}
+          aria-pressed={panel === "ai"}
+          onClick={() => togglePanel("ai")}
+        >
           <Sparkles className="h-4 w-4" aria-hidden />
-          <span className="sm:hidden">AI</span>
-          <span className="hidden sm:inline">Kiểm tra mâu thuẫn</span>
+          <span className="lg:hidden">AI</span>
+          <span className="hidden lg:inline">Kiểm tra mâu thuẫn</span>
         </button>
         {uid ? (
           <>
-            <span className="hidden max-w-[14rem] truncate text-sm text-muted-foreground lg:inline">{session?.user.email}</span>
-            <button className={btn} onClick={async () => { await flush(); await supabase.auth.signOut(); }} aria-label="Đăng xuất" title={session?.user.email ?? undefined}>
+            <span className="hidden max-w-[14rem] truncate text-sm text-muted-foreground xl:inline">
+              {session?.user.email}
+            </span>
+            <button
+              className={btn}
+              onClick={async () => {
+                await flush();
+                await supabase.auth.signOut();
+              }}
+              aria-label="Đăng xuất"
+              title={session?.user.email ?? undefined}
+            >
               <LogOut className="h-4 w-4" aria-hidden />
-              <span className="hidden sm:inline">Đăng xuất</span>
+              <span className="hidden lg:inline">Đăng xuất</span>
             </button>
           </>
         ) : (
           <button className={btn} onClick={() => setAuthOpen(true)}>
             <LogIn className="h-4 w-4" aria-hidden />
             <span className="sm:hidden">Đăng nhập</span>
-            <span className="hidden sm:inline">Đăng nhập / Đăng ký</span>
+            <span className="hidden sm:inline">Đăng nhập để sửa</span>
           </button>
         )}
       </div>
+      {notice && (
+        <div role="status" className="border-b border-border bg-muted px-3 py-1.5 text-sm">
+          {notice}
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1">
-        <iframe ref={frame} key={uid ?? "guest"} title="Sổ cốt truyện" srcDoc={doc} className="h-full min-w-0 flex-1 border-0" />
-        {aiOpen && (
+        {swapping ? (
+          <div className="flex-1 p-6 text-muted-foreground">Đang khôi phục…</div>
+        ) : (
+          <iframe
+            ref={frame}
+            key={frameKey}
+            title="Sổ cốt truyện"
+            srcDoc={doc}
+            className="h-full min-w-0 flex-1 border-0"
+          />
+        )}
+        {panel && (
           <>
             {/* Tablet: panel floats over the book; tap outside to close. Desktop: it sits beside the book. */}
-            <div className="absolute inset-0 z-10 hidden bg-foreground/30 sm:block lg:hidden" onClick={() => setAiOpen(false)} />
-            <AiPanel signedIn={!!uid} readBook={readBook} onClose={() => setAiOpen(false)} onLogin={() => setAuthOpen(true)} />
+            <div
+              className="absolute inset-0 z-10 hidden bg-foreground/30 sm:block lg:hidden"
+              onClick={() => setPanel(null)}
+            />
+            {panel === "ai" ? (
+              <AiPanel
+                signedIn={!!uid}
+                readBook={readBook}
+                onClose={() => setPanel(null)}
+                onLogin={() => setAuthOpen(true)}
+              />
+            ) : (
+              <HistoryPanel
+                signedIn={!!uid}
+                viewingId={viewId ?? null}
+                refreshKey={historyKey}
+                onView={view}
+                onRestore={restore}
+                onClose={() => setPanel(null)}
+                onLogin={() => setAuthOpen(true)}
+              />
+            )}
           </>
         )}
       </div>
       {authOpen && !uid && <AuthDialog onClose={() => setAuthOpen(false)} />}
+      {publishOpen && editing && (
+        <PublishDialog onPublish={publish} onClose={() => setPublishOpen(false)} />
+      )}
     </div>
   );
 }
@@ -227,7 +433,8 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
         options: { emailRedirectTo: `${window.location.origin}/so` },
       });
       if (error) setMsg(error.message);
-      else if (!data.session) setMsg("Đã gửi thư xác nhận. Mở email và bấm vào liên kết, rồi quay lại đăng nhập.");
+      else if (!data.session)
+        setMsg("Đã gửi thư xác nhận. Mở email và bấm vào liên kết, rồi quay lại đăng nhập.");
     }
     setBusy(false);
   }
@@ -237,7 +444,10 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
       type="button"
       role="tab"
       aria-selected={mode === m}
-      onClick={() => { setMode(m); setMsg(""); }}
+      onClick={() => {
+        setMode(m);
+        setMsg("");
+      }}
       className={`flex-1 rounded px-3 py-2 text-sm ${mode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
     >
       {label}
@@ -245,7 +455,10 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-foreground/40 p-3 sm:p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-foreground/40 p-3 sm:p-4"
+      onClick={onClose}
+    >
       <form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
@@ -253,17 +466,35 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
       >
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Tài khoản</h2>
-          <button type="button" aria-label="Đóng" className={closeBtn} onClick={onClose}><X className="h-4 w-4" /></button>
+          <button type="button" aria-label="Đóng" className={closeBtn} onClick={onClose}>
+            <X className="h-4 w-4" />
+          </button>
         </div>
         <div role="tablist" className="flex gap-1 rounded-md border border-border p-1">
           {tab("in", "Đăng nhập")}
           {tab("up", "Đăng ký")}
         </div>
-        <input type="email" required placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
-          className="w-full rounded border border-input bg-background px-3 py-2" />
-        <input type="password" required minLength={6} placeholder="Mật khẩu (ít nhất 6 ký tự)" value={pw}
-          onChange={(e) => setPw(e.target.value)} className="w-full rounded border border-input bg-background px-3 py-2" />
-        <button disabled={busy} className="w-full rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-60">
+        <input
+          type="email"
+          required
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full rounded border border-input bg-background px-3 py-2"
+        />
+        <input
+          type="password"
+          required
+          minLength={6}
+          placeholder="Mật khẩu (ít nhất 6 ký tự)"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          className="w-full rounded border border-input bg-background px-3 py-2"
+        />
+        <button
+          disabled={busy}
+          className="w-full rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-60"
+        >
           {busy ? "Đang xử lý…" : mode === "in" ? "Đăng nhập" : "Tạo tài khoản"}
         </button>
         {msg && <p className="text-sm text-muted-foreground">{msg}</p>}
@@ -272,7 +503,12 @@ function AuthDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onClose: () => void; onLogin: () => void }) {
+function AiPanel(props: {
+  signedIn: boolean;
+  readBook: () => string | null;
+  onClose: () => void;
+  onLogin: () => void;
+}) {
   const check = useServerFn(checkStoryConsistency);
   const [notes, setNotes] = useState("");
   const [withBook, setWithBook] = useState(true);
@@ -296,10 +532,12 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
   }
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-20 flex w-full flex-col gap-3 overflow-y-auto border-l border-border bg-card p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-card-foreground sm:w-[420px] sm:shadow-xl lg:static lg:z-auto lg:w-[380px] lg:shrink-0 lg:shadow-none xl:w-[440px]">
+    <aside className={panelCls}>
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">Kiểm tra mâu thuẫn</h2>
-        <button aria-label="Đóng" className={closeBtn} onClick={props.onClose}><X className="h-4 w-4" /></button>
+        <button aria-label="Đóng" className={closeBtn} onClick={props.onClose}>
+          <X className="h-4 w-4" />
+        </button>
       </div>
       <p className="text-sm text-muted-foreground">
         Nhập ghi chú cốt truyện. AI sẽ tìm chỗ mâu thuẫn về nhân vật, địa điểm và sự kiện.
@@ -311,15 +549,27 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
         className="min-h-40 w-full rounded border border-input bg-background p-2 text-base sm:text-sm"
       />
       <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" className="h-4 w-4" checked={withBook} onChange={(e) => setWithBook(e.target.checked)} />
+        <input
+          type="checkbox"
+          className="h-4 w-4"
+          checked={withBook}
+          onChange={(e) => setWithBook(e.target.checked)}
+        />
         So với toàn bộ nội dung sổ hiện tại
       </label>
       {props.signedIn ? (
-        <button disabled={busy} onClick={run} className="min-h-10 rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-60">
+        <button
+          disabled={busy}
+          onClick={run}
+          className="min-h-10 rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-60"
+        >
           {busy ? "AI đang đọc… (có thể mất tới 1 phút)" : "Kiểm tra"}
         </button>
       ) : (
-        <button onClick={props.onLogin} className="min-h-10 rounded bg-primary px-3 py-2 text-sm text-primary-foreground">
+        <button
+          onClick={props.onLogin}
+          className="min-h-10 rounded bg-primary px-3 py-2 text-sm text-primary-foreground"
+        >
           Đăng nhập để dùng kiểm tra AI
         </button>
       )}
@@ -327,12 +577,16 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
       {res && (
         <div className="space-y-3">
           <p className="text-sm">{res.tomTat}</p>
-          {res.mauThuan.length === 0 && <p className="text-sm text-muted-foreground">Không thấy mâu thuẫn.</p>}
+          {res.mauThuan.length === 0 && (
+            <p className="text-sm text-muted-foreground">Không thấy mâu thuẫn.</p>
+          )}
           {res.mauThuan.map((m, i) => (
             <div key={i} className="space-y-1.5 rounded-md border border-border p-3 text-sm">
               <div className="flex flex-wrap gap-1.5 text-xs">
                 <span className="rounded-full border border-border px-2">{m.loai}</span>
-                <span className={`rounded-full border px-2 ${m.mucDo === "Cao" ? "border-destructive text-destructive" : "border-border text-muted-foreground"}`}>
+                <span
+                  className={`rounded-full border px-2 ${m.mucDo === "Cao" ? "border-destructive text-destructive" : "border-border text-muted-foreground"}`}
+                >
                   Mức độ: {m.mucDo}
                 </span>
               </div>
@@ -340,10 +594,15 @@ function AiPanel(props: { signedIn: boolean; readBook: () => string | null; onCl
               <p>{m.chiTiet}</p>
               {m.dauVet.length > 0 && (
                 <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
-                  {m.dauVet.map((d, j) => <li key={j}>“{d}”</li>)}
+                  {m.dauVet.map((d, j) => (
+                    <li key={j}>“{d}”</li>
+                  ))}
                 </ul>
               )}
-              <p><span className="text-muted-foreground">Gợi ý: </span>{m.goiY}</p>
+              <p>
+                <span className="text-muted-foreground">Gợi ý: </span>
+                {m.goiY}
+              </p>
             </div>
           ))}
         </div>

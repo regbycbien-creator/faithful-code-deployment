@@ -28,7 +28,10 @@ Nhiệm vụ: tìm MÂU THUẪN thật sự giữa nhân vật (tên, tuổi, qu
 - Nếu không thấy mâu thuẫn, trả về danh sách rỗng và nói rõ trong "tomTat".
 Trả lời hoàn toàn bằng tiếng Việt.`;
 
-export async function checkConsistency(notes: string, book: string | null): Promise<ConsistencyResult> {
+export async function checkConsistency(
+  notes: string,
+  book: string | null,
+): Promise<ConsistencyResult> {
   const apiKey = process.env["LOVABLE_API_KEY"];
   if (!apiKey) throw new Error("Chưa cấu hình khóa AI.");
   const runIdFetch = createLovableAiGatewayRunIdFetch();

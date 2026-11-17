@@ -14,6 +14,33 @@ export type Database = {
   }
   public: {
     Tables: {
+      public_versions: {
+        Row: {
+          author_id: string
+          author_label: string
+          created_at: string
+          data: Json
+          id: string
+          note: string
+        }
+        Insert: {
+          author_id?: string
+          author_label?: string
+          created_at?: string
+          data: Json
+          id?: string
+          note?: string
+        }
+        Update: {
+          author_id?: string
+          author_label?: string
+          created_at?: string
+          data?: Json
+          id?: string
+          note?: string
+        }
+        Relationships: []
+      }
       story_docs: {
         Row: {
           data: Json
