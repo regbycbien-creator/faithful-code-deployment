@@ -28,13 +28,12 @@ export const Route = createFileRoute("/so")({
       { title: "Sổ cốt truyện – Phủ Hách & Đại Hòa" },
       {
         name: "description",
-        content:
-          "Sổ cốt truyện Phủ Hách & Đại Hòa: bản công khai ai cũng đọc được, bản riêng cho từng tài khoản, lịch sử đăng tải và kiểm tra mâu thuẫn bằng AI.",
+        content: "Sổ cốt truyện Phủ Hách & Đại Hòa — Cốt truyện · Nhân vật · Plot chi tiết · Chi tiết án · Cần làm rõ.",
       },
       { property: "og:title", content: "Sổ cốt truyện – Phủ Hách & Đại Hòa" },
       {
         property: "og:description",
-        content: "Đọc bản công khai, sửa bản riêng theo tài khoản và đăng tải đồng bộ có lịch sử.",
+        content: "Sổ cốt truyện Phủ Hách & Đại Hòa — Cốt truyện · Nhân vật · Plot chi tiết · Chi tiết án · Cần làm rõ.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
