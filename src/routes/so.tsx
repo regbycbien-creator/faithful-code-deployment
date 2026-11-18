@@ -10,6 +10,7 @@ import { BOOK_RESPONSIVE_CSS } from "@/lib/book-responsive";
 import { AUTOSAVE_INTERVAL_MS, BOOK_LOCAL_KEY, createCloudSaver } from "@/lib/autosave";
 import { bookFrameHead, chooseStartingCopy } from "@/lib/book-frame";
 import { caseBoxesHead } from "@/lib/case-boxes";
+import { downloadsApi, jsonSyncHead } from "@/lib/json-sync";
 import {
   formatTime,
   latestPublicData,
@@ -81,7 +82,7 @@ function makePrivateBridge(userId: string) {
     }),
   };
   return {
-    use: async (name: string) => (name === "db" ? db : null),
+    use: async (name: string) => (name === "db" ? db : name === "downloads" ? downloadsApi : null),
     saver,
     isLoaded: () => loaded,
   };
@@ -99,7 +100,7 @@ function makeViewBridge(load: () => Promise<unknown | null>) {
       async set() {},
     }),
   };
-  return { use: async (name: string) => (name === "db" ? db : null) };
+  return { use: async (name: string) => (name === "db" ? db : name === "downloads" ? downloadsApi : null) };
 }
 
 type BookWindow = { eval: (s: string) => string };
@@ -264,7 +265,7 @@ function SoPage() {
     )
     .replace(
       "</head>",
-      `<style>${BOOK_RESPONSIVE_CSS}</style>${caseBoxesHead(!editing)}</head>`,
+      `<style>${BOOK_RESPONSIVE_CSS}</style>${caseBoxesHead(!editing)}${jsonSyncHead()}</head>`,
     );
   const frameKey = `${viewId ?? (uid ? `u:${uid}` : "public")}:${epoch}`;
   const togglePanel = (p: "ai" | "history") => setPanel((cur) => (cur === p ? null : p));
